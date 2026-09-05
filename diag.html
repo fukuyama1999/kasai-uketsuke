@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LIFF 診断</title>
+<script charset="utf-8" src="https://static.line-scdn.net/liff/edge/2/sdk.js"
+        onerror="window.__sdkLoadFailed = true;"></script>
+<style>
+  :root{--ink:#16202b;--muted:#5f6b78;--line:#d6d3cb;--ok:#1c5a3c;--ng:#98341f;--paper:#faf9f6;}
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--paper);color:var(--ink);line-height:1.7;
+       font-family:"Hiragino Kaku Gothic ProN","Yu Gothic","Noto Sans JP",system-ui,sans-serif;}
+  main{max-width:640px;margin:0 auto;padding:24px 18px 60px;}
+  h1{font-size:22px;margin:0 0 4px;}
+  h2{font-size:16px;margin:32px 0 10px;padding-bottom:6px;border-bottom:2px solid var(--line);}
+  p{margin:0 0 12px;}
+  .lead{color:var(--muted);font-size:14px;margin-bottom:24px;}
+  table{width:100%;border-collapse:collapse;font-size:14px;}
+  th,td{text-align:left;vertical-align:top;padding:9px 8px;border-bottom:1px solid var(--line);}
+  th{width:11em;font-weight:600;color:var(--muted);}
+  td{overflow-wrap:anywhere;}
+  .mono{font-family:ui-monospace,"SFMono-Regular",Menlo,Consolas,"Courier New",monospace;
+        font-size:14px;letter-spacing:.06em;}
+  .ok{color:var(--ok);font-weight:700;}
+  .ng{color:var(--ng);font-weight:700;}
+  .chars{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;}
+  .chars span{border:1px solid var(--line);border-radius:6px;background:#fff;
+              padding:4px 8px;font-size:12px;line-height:1.4;text-align:center;}
+  .chars b{display:block;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:17px;}
+  .chars .warn{border-color:#c98b2e;background:#fff8e8;}
+  input{width:100%;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:16px;
+        padding:12px;border:1.5px solid var(--line);border-radius:8px;background:#fff;letter-spacing:.06em;}
+  button{font-family:inherit;font-size:15px;padding:12px 18px;margin-top:10px;
+         border:none;border-radius:8px;background:#1d3a5c;color:#fff;cursor:pointer;}
+  button.sub{background:#fff;color:var(--ink);border:1.5px solid var(--line);}
+  pre{background:#fff;border:1px solid var(--line);border-radius:8px;padding:12px;
+      font-size:12px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;margin:0;}
+  .hint{font-size:13px;color:var(--muted);}
+</style>
+</head>
+<body>
+<main>
+  <h1>LIFF 診断</h1>
+  <p class="lead">受付画面が開かない原因を切り分けるためのページです。参加者には見せません。</p>
+
+  <h2>1　LIFF SDK</h2>
+  <table><tbody id="tbl-sdk"></tbody></table>
+
+  <h2>2　試したLIFF ID</h2>
+  <input type="text" id="liffId" spellcheck="false" autocapitalize="off" autocorrect="off">
+  <p class="hint">LINE Developersの<strong>コピーアイコン</strong>で写した値を貼って、下のボタンを押してください。手で打ち直さないでください。</p>
+  <button type="button" id="retry">このIDで初期化を試す</button>
+  <div class="chars" id="chars"></div>
+
+  <h2>3　初期化の結果</h2>
+  <table><tbody id="tbl-init"></tbody></table>
+
+  <h2>4　開いている場所</h2>
+  <table><tbody id="tbl-env"></tbody></table>
+
+  <h2>5　Apps Scriptへの疎通</h2>
+  <p class="hint">ウェブアプリを公開したあとで使います。まだなら空のままで構いません。</p>
+  <input type="text" id="gasUrl" spellcheck="false" placeholder="https://script.google.com/macros/s/.../exec">
+  <button type="button" id="ping">POSTを送ってみる</button>
+  <pre id="gasOut">未実行</pre>
+
+  <h2>6　診断結果</h2>
+  <button type="button" class="sub" id="copy">結果をまとめてコピー</button>
+  <pre id="report">…</pre>
+</main>
+
+<script>
+"use strict";
+
+/* ここは書き換えなくて構いません。画面の入力欄で差し替えられます。 */
+const DEFAULT_LIFF_ID = "2011459385-7IJkDlr6";
+
+const $ = (id) => document.getElementById(id);
+const state = {};
+
+function rows(tbodyId, pairs) {
+  $(tbodyId).innerHTML = pairs.map(function (p) {
+    const cls = p[2] === true ? "ok" : p[2] === false ? "ng" : "";
+    return "<tr><th>" + p[0] + '</th><td class="' + cls + ' mono">' +
+           String(p[1]).replace(/&/g, "&amp;").replace(/</g, "&lt;") + "</td></tr>";
+  }).join("");
+}
+
+/* 大文字のI、小文字のl、数字の1、大文字のO、数字の0を見分けられるように分解する */
+const NAMES = {
+  "I": "大文字のアイ", "l": "小文字のエル", "1": "数字のイチ",
+  "O": "大文字のオー", "0": "数字のゼロ", "-": "ハイフン"
+};
+function breakdown(id) {
+  $("chars").innerHTML = id.split("").map(function (c) {
+    const label = NAMES[c];
+    return '<span class="' + (label && c !== "-" ? "warn" : "") + '"><b>' + c + "</b>" +
+           (label || "") + "</span>";
+  }).join("");
+}
+
+/* --- 1. SDK --- */
+function checkSdk() {
+  const loaded = (typeof liff !== "undefined") && !window.__sdkLoadFailed;
+  state.sdkLoaded = loaded;
+  state.sdkVersion = loaded && liff.getVersion ? liff.getVersion() : "取得できません";
+  rows("tbl-sdk", [
+    ["読み込み", loaded ? "成功" : "失敗（広告ブロッカーやネットワーク制限を確認）", loaded],
+    ["バージョン", state.sdkVersion],
+    ["読み込み元", "https://static.line-scdn.net/liff/edge/2/sdk.js"]
+  ]);
+  return loaded;
+}
+
+/* --- 3+4. 初期化 --- */
+async function tryInit(id) {
+  breakdown(id);
+  state.liffId = id;
+  rows("tbl-init", [["状態", "実行中…"]]);
+
+  if (!checkSdk()) {
+    state.initResult = "SDK未読み込みのため実行できません";
+    rows("tbl-init", [["状態", state.initResult, false]]);
+    showEnv();
+    return;
+  }
+
+  try {
+    await liff.init({ liffId: id });
+    state.initResult = "成功";
+    state.errCode = "";
+    state.errMsg = "";
+    rows("tbl-init", [["状態", "成功", true], ["liff.id", liff.id || "(なし)"]]);
+  } catch (e) {
+    state.initResult = "失敗";
+    state.errCode = (e && e.code) || "(コードなし)";
+    state.errMsg = (e && e.message) || String(e);
+    rows("tbl-init", [
+      ["状態", "失敗", false],
+      ["エラーコード", state.errCode],
+      ["メッセージ", state.errMsg],
+      ["原因(cause)", (e && e.cause) ? JSON.stringify(e.cause) : "(なし)"]
+    ]);
+  }
+  showEnv();
+  writeReport();
+}
+
+function showEnv() {
+  const pairs = [["いまのURL", location.href], ["エンドポイントに指定すべき値", location.origin + location.pathname]];
+  if (state.sdkLoaded && state.initResult === "成功") {
+    let inClient = "", loggedIn = "", token = "", os = "";
+    try { inClient = liff.isInClient() ? "LINE内（LIFFブラウザ）" : "外部ブラウザ"; } catch (e) {}
+    try { loggedIn = liff.isLoggedIn() ? "ログイン済み" : "未ログイン"; } catch (e) {}
+    try { os = liff.getOS() + " / LINE " + (liff.getLineVersion() || "-"); } catch (e) {}
+    try {
+      const t = liff.getIDToken();
+      token = t ? "取得できました（先頭16文字：" + t.slice(0, 16) + "…）" : "取得できません（openidスコープ、または未ログイン）";
+    } catch (e) { token = "取得できません：" + e.message; }
+    pairs.push(["開いている場所", inClient], ["ログイン状態", loggedIn],
+               ["環境", os], ["IDトークン", token]);
+    state.env = { inClient: inClient, loggedIn: loggedIn, os: os, token: token };
+  }
+  rows("tbl-env", pairs);
+  writeReport();
+}
+
+/* --- 5. Apps Scriptへの疎通 --- */
+$("ping").addEventListener("click", async function () {
+  const url = $("gasUrl").value.trim();
+  if (!url) { $("gasOut").textContent = "URLを入れてください。"; return; }
+  $("gasOut").textContent = "送信中…";
+  let token = null;
+  try { token = liff.getIDToken(); } catch (e) {}
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify({ action: "status", idToken: token }),
+      redirect: "follow"
+    });
+    const text = await res.text();
+    state.gas = "HTTP " + res.status + " / " + text.slice(0, 300);
+    $("gasOut").textContent = "HTTP " + res.status + "\n\n" + text.slice(0, 1200);
+  } catch (e) {
+    state.gas = "失敗：" + e.message;
+    $("gasOut").textContent =
+      "失敗：" + e.message +
+      "\n\nCORSで止まっている場合は、Apps Scriptのデプロイ設定で" +
+      "「アクセスできるユーザー」が『全員』になっているか確認してください。" +
+      "\nコードを直したあとに「新バージョンでデプロイ」をしたかも確認してください。";
+  }
+  writeReport();
+});
+
+/* --- 6. まとめ --- */
+function writeReport() {
+  const r = [
+    "LIFF診断結果  " + new Date().toLocaleString("ja-JP"),
+    "SDK読み込み : " + (state.sdkLoaded ? "成功 v" + state.sdkVersion : "失敗"),
+    "試したLIFF ID: " + (state.liffId || "-"),
+    "初期化       : " + (state.initResult || "-"),
+    "エラーコード : " + (state.errCode || "-"),
+    "メッセージ   : " + (state.errMsg || "-"),
+    "いまのURL    : " + location.href,
+    "開いている場所: " + ((state.env && state.env.inClient) || "-"),
+    "ログイン状態 : " + ((state.env && state.env.loggedIn) || "-"),
+    "環境         : " + ((state.env && state.env.os) || "-"),
+    "IDトークン   : " + ((state.env && state.env.token) || "-"),
+    "GAS疎通      : " + (state.gas || "未実行")
+  ].join("\n");
+  $("report").textContent = r;
+  state.report = r;
+}
+
+$("copy").addEventListener("click", function () {
+  navigator.clipboard.writeText(state.report).then(
+    function () { alert("コピーしました。"); },
+    function () { alert("コピーできませんでした。下の文字を長押しで選択してください。"); });
+});
+
+$("retry").addEventListener("click", function () {
+  const v = $("liffId").value.trim();
+  if (v) tryInit(v);
+});
+
+/* --- 起動 --- */
+$("liffId").value = DEFAULT_LIFF_ID;
+checkSdk();
+tryInit(DEFAULT_LIFF_ID);
+</script>
+</body>
+</html>
